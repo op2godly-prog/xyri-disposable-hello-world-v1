@@ -1,0 +1,79 @@
+name: Pi cloud probe (Linux, bounded, manual only)
+
+# Standalone Linux cloud Pi + Muse probe for a self-owned test repo.
+# Manual dispatch only. Never prints credentials. The real model turn runs
+# ONLY when MUSE_KEY_* secrets are configured; otherwise blocker evidence
+# is recorded instead.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned Pi harness
+        run: npm install -g @earendil-works/pi-coding-agent@0.85.1
+      - name: Record cloud evidence (no credentials)
+        env:
+          MUSE_KEY_1: ${{ secrets.MUSE_KEY_1 }}
+          MUSE_KEY_2: ${{ secrets.MUSE_KEY_2 }}
+          MUSE_KEY_3: ${{ secrets.MUSE_KEY_3 }}
+          MUSE_KEY_4: ${{ secrets.MUSE_KEY_4 }}
+        run: |
+          mkdir -p pi-cloud-evidence
+          python - <<'EOF'
+          import json, os, platform, subprocess
+          def run(*argv):
+              try:
+                  p = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+                  return {"exit": p.returncode, "out": (p.stdout + p.stderr)[-2000:]}
+              except Exception as exc:
+                  return {"exit": None, "out": type(exc).__name__}
+          refs = [r for r in ("MUSE_KEY_1", "MUSE_KEY_2", "MUSE_KEY_3", "MUSE_KEY_4") if os.environ.get(r, "").strip()]
+          evidence = {
+              "runner_os": platform.system() + " " + platform.release(),
+              "runner_arch": platform.machine(),
+              "python": platform.python_version(),
+              "pi": run("pi", "--version"),
+              "provider": "opencode",
+              "model": "muse-spark-1.3-contributor-free",
+              "configured_ref_count": len(refs),
+              "pc_required": False,
+          }
+          if refs:
+              prompt = "Reply with the single word OK and nothing else."
+              r = run("pi", "--provider", "opencode", "--model", "muse-spark-1.3-contributor-free",
+                      "--no-session", "--print", "--", prompt)
+              evidence["real_model_turn"] = {"exit": r["exit"], "output_tail": r["out"][-500:], "burned": True}
+          else:
+              evidence["real_model_turn"] = {"exit": None, "burned": False,
+                  "blocker": "no MUSE_KEY_* secrets configured in cloud; real turn not attempted"}
+          blob = json.dumps(evidence)
+          for ref in ("MUSE_KEY_1", "MUSE_KEY_2", "MUSE_KEY_3", "MUSE_KEY_4"):
+              value = os.environ.get(ref, "")
+              if value and value.strip() in blob:
+                  raise SystemExit("credential leak guard tripped")
+          with open("pi-cloud-evidence/evidence.json", "w") as fh:
+              json.dump(evidence, fh, indent=2, sort_keys=True)
+          print(json.dumps({k: v for k, v in evidence.items() if k != "real_model_turn"}, indent=2, sort_keys=True))
+          EOF
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pi-cloud-evidence
+          path: pi-cloud-evidence/
+          retention-days: 30
